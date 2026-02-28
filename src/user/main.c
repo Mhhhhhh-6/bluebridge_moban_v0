@@ -13,32 +13,29 @@
 
 #include "string.h"
 #include "stdio.h"
+
+idata unsigned long int uwTick;
+
 							//1 2 3 4 5 6 7 8
 pdata unsigned char ucLed[8]={0,0,0,0,0,0,0,0};
 pdata unsigned char Seg_Buf[8]={16,16,16,16,16,16,16,16};
 idata unsigned char Seg_Pos=0;
-idata unsigned char Seg_Slow_Down;
 
 idata unsigned char Key_Val,Key_Old,Key_Up,Key_Down;
 idata unsigned char Key_up_data,Key_down_data;
-idata unsigned char Key_Slow_Down;
 
 pdata unsigned char ucRtc[3]={0x23,0x59,0x55};
-idata unsigned char Time_Slow_Down;
 
 idata float Temperature;
 idata unsigned int Temperature_100x;
-idata unsigned int Temperature_Slow_Down;
 
 idata unsigned int AD_1_Data_100x,AD_3_Data_100x;
 idata unsigned char DA_data;
-idata unsigned char AD_DA_Slow_Down;
 
 pdata unsigned char EEPROM_Data_W[8]={1,2,3,4,5,6,7,8};
 pdata unsigned char EEPROM_Data_R[8]={0,0,0,0,0,0,0,0};
 
 idata unsigned char Distance;
-idata unsigned char Distance_Slow_Down;
 
 idata unsigned int Freq;
 idata unsigned int Time_1s;
@@ -54,8 +51,6 @@ idata unsigned char Uart_Rx_Tick;//超时解析计时器
 idata unsigned char Seg_Show_Mode;//0：时间 1：温度 2：AD 3：超声波 4：频率 5：PWM参数
 	
 void Key_Proc(){
-	if(Key_Slow_Down<10) return;
-	Key_Slow_Down=0;
 	Key_Val=Key_Read();
 	Key_Down=Key_Val&(Key_Val^Key_Old);
 	Key_Up=~Key_Val&(Key_Val^Key_Old);
@@ -66,8 +61,6 @@ void Key_Proc(){
 }
 
 void Seg_Proc(){
-	if(Seg_Slow_Down<20) return;
-	Seg_Slow_Down=0;
 	switch(Seg_Show_Mode){
 		case 0:
 			Seg_Buf[0]=ucRtc[0]/16;
@@ -145,21 +138,15 @@ void Led_Proc(){
 }
 
 void Get_Time(){
-	if(Time_Slow_Down<100) return;
-	Time_Slow_Down=0;
 	Read_Rtc(ucRtc);
 }
 
 void Get_Temperature(){
-	if(Temperature_Slow_Down<300) return;
-	Temperature_Slow_Down=0;
 	Temperature=rd_temperature();
 	Temperature_100x=(unsigned int)(Temperature*100);
 }
 
 void AD_DA(){
-	if(AD_DA_Slow_Down<120) return;
-	AD_DA_Slow_Down=0;
 	AD_1_Data_100x=(float)Ad_Read(0x41)/51.0f*100;//255->5
 	AD_3_Data_100x=(float)Ad_Read(0x43)/51.0f*100;//255->5
 	DA_data=3;
@@ -167,8 +154,6 @@ void AD_DA(){
 }
 
 void Get_Distance(){
-	if(Distance_Slow_Down<150) return;
-	Distance_Slow_Down=0;
 	Distance=Ut_Wave_Data();
 }
 
@@ -215,12 +200,7 @@ void Timer1_Init(void)		//1毫秒@12.000MHz
 
 void Timer1_Isr(void) interrupt 3
 {
-	Key_Slow_Down++;
-	Seg_Slow_Down++;
-	Time_Slow_Down++;
-	AD_DA_Slow_Down++;
-	Temperature_Slow_Down++;
-	Distance_Slow_Down++;
+	uwTick++;
 	
 	Seg_Pos=(++Seg_Pos)%8;
 	Seg_Disp(Seg_Pos,Seg_Buf[Seg_Pos]);
@@ -257,6 +237,39 @@ void Uart1_Isr(void) interrupt 4
 	}
 }
 
+typedef struct{
+	void(*task_func)(void);
+	unsigned long int rate_ms;
+	unsigned long int last_ms;
+}task_t;
+
+idata task_t Scheduler_Task[]={
+	{Led_Proc,1,0},
+	{Key_Proc,10,0},
+	{Seg_Proc,20,0},
+	{Get_Time,100,0},
+	{Get_Temperature,300,0},
+	{AD_DA,150,0},
+	{Get_Distance,120,0},
+	{Uart_Proc,10,0}
+};
+
+idata unsigned char task_num;
+void Scheduler_Init(){
+	task_num=sizeof(Scheduler_Task)/sizeof(task_t);
+}
+
+void Scheduler_Run(){
+	unsigned char i;
+	for(i=0;i<task_num;i++){
+		unsigned long int now_time=uwTick;
+		if(now_time>=(Scheduler_Task[i].rate_ms+Scheduler_Task[i].last_ms)){
+			Scheduler_Task[i].last_ms=now_time;
+			Scheduler_Task[i].task_func();
+		}
+	}
+}
+
 void main(){
 	System_Init();
 	
@@ -267,16 +280,10 @@ void main(){
 	EEPROM_Read(EEPROM_Data_R, 0, 8);  // 再次读取以验证写入
 	
 	Timer0_Init();
+	Scheduler_Init();
 	Uart1_Init();
 	Timer1_Init();
 	while(1){
-		Key_Proc();
-		Seg_Proc();
-		Led_Proc();
-		Get_Time();
-		Get_Temperature();
-		AD_DA();
-		Get_Distance();
-		Uart_Proc();
+		Scheduler_Run();
 	}
 }
